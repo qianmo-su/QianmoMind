@@ -1,0 +1,49 @@
+# Local editor settings
+.vscode/
+.idea/
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Environment and secret files
+.env
+.env.*
+*.ini
+*.cfg
+*.yaml
+*.yml
+!*.example.yaml
+!*.example.yml
+
+# Training outputs and temporary files
+checkpoints/
+outputs/
+runs/
+logs/
+*.pt
+*.pth
+*.ckpt
+
+# OS metadata
+.DS_Store
+Thumbs.db
