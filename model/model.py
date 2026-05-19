@@ -336,14 +336,86 @@ class MokioMindAttention(nn.Module):
         attn_output = self.o_proj(attn_output)
         
         return attn_output
+
+# FFN
+class MokioMindMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.hidden_size = config.hidden_size
+        
+        if config.intermediate_size is None:
+            self.intermediate_size = 4 * config.hidden_size
+        else:
+            self.intermediate_size = config.intermediate_size
+        
+        self.gate_proj = nn.Linear(
+            self.hidden_size,
+            self.intermediate_size,
+            bias=False
+        )
+        
+        self.up_proj = nn.Linear(
+            self.hidden_size,
+            self.intermediate_size,
+            bias=False
+        )
+        
+        self.down_proj = nn.Linear(
+            self.intermediate_size,
+            self.hidden_size,
+            bias=False
+        )
+        
+        self.act_fn = nn.SiLU()
     
-if __name__ == "__main__":
-    config = MokioMindConfig()
+    def forward(self, x):
+        return self.down_proj(
+            self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+        )
 
-    attn = MokioMindAttention(config)
-
-    x = torch.randn(2, 16, config.hidden_size)
-
-    y = attn(x)
-
-    print(y.shape)
+# Residual Connection
+class MokioMindDecoderLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.self_attn = MokioMindAttention(config)
+        self.mlp = MokioMindMLP(config)
+        
+        self.input_layernorm = RMSNorm(
+            config.hidden_size,
+            eps=config.rms_norm_eps
+        )
+        
+        self.post_attention_layernorm = RMSNorm(
+            config.hidden_size,
+            eps=config.rms_norm_eps
+        )
+    
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        position_ids=None
+    ):
+        residual = hidden_states
+        
+        hidden_states = self.input_layernorm(hidden_states)
+        
+        hidden_states = self.self_attn(
+            hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids
+        )
+        
+        hidden_states = residual + hidden_states
+        
+        residual = hidden_states
+        
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        
+        hidden_states = self.mlp(hidden_states)
+        
+        hidden_states = residual + hidden_states
+        
+        return hidden_states
