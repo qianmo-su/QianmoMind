@@ -190,3 +190,160 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None):
     k_embed = k * cos + rotate_half(k) * sin
     
     return q_embed, k_embed
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.dim = config.hidden_size // config.num_attention_heads
+        self.max_position_embeddings = config.max_position_embeddings
+        self.rope_theta = config.rope_theta
+        self.rope_scaling = config.rope_scaling
+        
+        cos, sin = build_rope_cache(
+            dim=self.dim,
+            end=self.max_position_embeddings,
+            rope_base=self.rope_theta,
+            rope_scaling=self.rope_scaling
+        )
+        
+        self.register_buffer("cos_cached", cos, persistent=False)
+        self.register_buffer("sin_cached", sin, persistent=False)
+    
+    def forward(self, q, k, position_ids=None):
+        return apply_rotary_pos_emb(
+            q,
+            k,
+            self.cos_cached,
+            self.sin_cached,
+            position_ids=position_ids
+        )
+
+# GQA
+def repeat_kv(x: torch.Tensor, n_rep: int):
+    bsz, num_kv_heads, seq_len, head_dim = x.shape
+    
+    if n_rep == 1:
+        return x
+    
+    x = x[:, :, None, :, :]
+    x = x.expand(bsz, num_kv_heads, n_rep, seq_len, head_dim)
+    
+    return x.reshape(bsz, num_kv_heads * n_rep, seq_len, head_dim)
+
+# hidden_states: [B, T, H]
+
+# q_proj -> [B, T, num_heads * head_dim]
+# k_proj -> [B, T, num_kv_heads * head_dim]
+# v_proj -> [B, T, num_kv_heads * head_dim]
+
+# reshape + transpose:
+# q -> [B, num_heads, T, head_dim]
+# k -> [B, num_kv_heads, T, head_dim]
+# v -> [B, num_kv_heads, T, head_dim]
+
+# RoPE(q, k)
+
+# repeat_kv:
+# k/v -> [B, num_heads, T, head_dim]
+
+# attention:
+# q @ k^T -> [B, num_heads, T, T]
+# attn @ v -> [B, num_heads, T, head_dim]
+
+# merge heads:
+# [B, T, H]
+
+# o_proj
+class MokioMindAttention(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_attention_heads
+        self.num_kv_heads = config.num_key_value_heads
+        self.head_dim = self.hidden_size // self.num_heads
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
+        self.dropout = config.dropout
+        
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        
+        self.k_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
+        
+        self.v_proj = nn.Linear(self.hidden_size, self.num_kv_heads * self.head_dim, bias=False)
+        
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        
+        self.rotary_emb = RotaryEmbedding(config)
+    
+    def forward(
+        self,
+        hidden_states,
+        attention_mask=None,
+        position_ids=None
+    ):
+        bsz, seq_len, _ = hidden_states.shape
+        
+        q_states = self.q_proj(hidden_states)
+        k_states = self.k_proj(hidden_states)
+        v_states = self.v_proj(hidden_states)
+        
+        q_states = q_states.view(
+            bsz, seq_len, self.num_heads, self.head_dim
+        ).transpose(1, 2)
+        
+        k_states = k_states.view(
+            bsz, seq_len, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        
+        v_states = v_states.view(
+            bsz, seq_len, self.num_kv_heads, self.head_dim
+        ).transpose(1, 2)
+        
+        k_states = repeat_kv(k_states, self.num_kv_groups)
+        v_states = repeat_kv(v_states, self.num_kv_groups)
+        
+        attn_weight = torch.matmul(
+            q_states,
+            k_states.transpose(2, 3)
+        ) / math.sqrt(self.head_dim)
+        
+        if attention_mask is not None:
+            attn_weight = attn_weight + attention_mask
+        
+        attn_weight = torch.softmax(
+            attn_weight,
+            dim=-1,
+            dtype=torch.float32
+        ).to(q_states.dtype)
+        
+        attn_weight = nn.functional.dropout(
+            attn_weight,
+            p=self.dropout,
+            training=self.training
+        )
+        
+        attn_output = torch.matmul(attn_weight, v_states)
+        
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(
+            bsz,
+            seq_len,
+            self.num_heads * self.head_dim
+        )
+        
+        attn_output = self.o_proj(attn_output)
+        
+        return attn_output
+    
+if __name__ == "__main__":
+    config = MokioMindConfig()
+
+    attn = MokioMindAttention(config)
+
+    x = torch.randn(2, 16, config.hidden_size)
+
+    y = attn(x)
+
+    print(y.shape)
