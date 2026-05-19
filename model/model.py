@@ -71,18 +71,122 @@ class MokioMindConfig(PretrainedConfig):
             else None
         )
         
+# RMSNorm
 import torch
 import torch.nn as nn
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim:int, eps:float=1e-6):
+    def __init__(self, dim: int, eps: float=1e-6):
         super().__init__()
         self.dim = dim
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
     def _norm(self, x):
-        return torch.rsqrt(x.pow(2).mean(-1,keepdim=True)+self.eps)
+        return x * torch.rsqrt(x.pow(2).mean(-1,keepdim=True)+self.eps)
     
     def forward(self, x):
         return self.weight * self._norm(x.float()).type_as(x)
+    
+# RoPE + YaRN
+import math
+from typing import Optional
+
+def build_rope_freqs(dim: int, rope_base: float = 10000.0):
+    # arange:[0, 2, 4, ... , dim]
+    # freqs.shape = [dim/2] --- 1-D vector
+    freqs = 1.0 / (rope_base ** (torch.arange(0, dim, 2).float() / dim))
+    return freqs
+
+def apply_yarn_scaling(
+    freqs: torch.Tensor,
+    dim: int,
+    rope_base: float,
+    orig_max: int,
+    factor: float,
+    beta_fast: float,
+    beta_slow: float
+):
+    def inv_dim(beta):
+        return (
+            dim * math.log(orig_max / (beta * 2 * math.pi))
+            / (2 * math.log(rope_base))
+        )
+        
+    low = max(math.floor(inv_dim(beta_fast)), 0)
+    high = min(math.ceil(inv_dim(beta_slow)), dim // 2 - 1)
+    
+    idx = torch.arange(dim // 2, device=freqs.device).float()
+    
+    ramp = torch.clamp(
+        (idx - low) / max(high - low, 0.001),
+        0,
+        1
+    )
+    
+    freqs = freqs * (1 - ramp + ramp / factor)
+    
+    return freqs
+
+def build_rope_cache(dim: int, end: int, rope_base: float = 10000.0, rope_scaling: Optional[dict] = None):
+    freqs = build_rope_freqs(dim, rope_base)
+    
+    attn_factor = 1.0
+    
+    if rope_scaling is not None:
+        orig_max = rope_scaling.get("original_max_position_embeddings", 2048)
+        factor = rope_scaling.get("factor", 16)
+        beta_fast = rope_scaling.get("beta_fast", 32.0)
+        beta_slow = rope_scaling.get("beta_slow", 1.0)
+        attn_factor = rope_scaling.get("attention_factor", 1.0)
+        
+        if end > orig_max:
+            freqs = apply_yarn_scaling(
+                freqs=freqs,
+                dim=dim,
+                rope_base=rope_base,
+                orig_max=orig_max,
+                factor=factor,
+                beta_fast=beta_fast,
+                beta_slow=beta_slow,
+            )
+    
+    # end -> the count of tokens
+    # t.shape = [end] --- 1-D vector
+    t = torch.arange(end, device=freqs.device)
+    # angles.shape = [dim/2, end] --- 2-D matrix
+    # angles[i, j] means the rotate angle on pos i and group j
+    angles = torch.outer(t, freqs).float()
+    
+    # e.g. we have a vector [x0, x1, x2, x3, x4, x5]
+    # half-split:(x0, x3)--θ0,(x1,x4)--θ1,(x2,x5)--θ2
+    # [x0, x1, x2, x3, x4, x5] -- [c0, c1, c2, c0, c1, c2]
+    # that is why we need to use 'cat'
+    cos = torch.cat([torch.cos(angles), torch.cos(angles)], dim=-1)
+    sin = torch.cat([torch.sin(angles), torch.sin(angles)], dim=-1)
+    
+    return cos, sin
+
+def rotate_half(x):
+    return torch.cat(
+        # [x0, x1, x2, x3, x4, x5] -> [-x3, -x4, -x5, x0, x1, x2]
+        (-x[..., x.shape[-1] // 2:], x[..., : x.shape[-1] // 2]),
+        dim=-1
+    )
+    
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None):
+    if position_ids is None:
+        seq_len = q.shape[-2]
+        cos = cos[:seq_len]
+        sin = sin[:seq_len]
+        cos = cos[None, None, :, :]
+        sin = sin[None, None, :, :]
+    else:
+        cos = cos[position_ids][:, None, :, :]
+        sin = sin[position_ids][:, None, :, :]
+    
+    # rotate
+    q_embed = q * cos + rotate_half(q) * sin
+    k_embed = k * cos + rotate_half(k) * sin
+    
+    return q_embed, k_embed
