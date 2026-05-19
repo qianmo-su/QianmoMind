@@ -231,6 +231,15 @@ def repeat_kv(x: torch.Tensor, n_rep: int):
     
     return x.reshape(bsz, num_kv_heads * n_rep, seq_len, head_dim)
 
+def make_causal_mask(seq_len, device, dtype):
+    mask = torch.full(
+        (seq_len, seq_len),
+        torch.finfo(dtype).min,
+        device=device
+    )
+    mask = torch.triu(mask, diagonal=1)
+    return mask[None, None, :, :]
+
 # hidden_states: [B, T, H]
 
 # q_proj -> [B, T, num_heads * head_dim]
@@ -417,5 +426,65 @@ class MokioMindDecoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         
         hidden_states = residual + hidden_states
+        
+        return hidden_states
+
+# Model
+class MokioMindModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.config = config
+        self.vocab_size = config.vocab_size
+        self.hidden_size = config.hidden_size
+        
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size,
+            config.hidden_size
+        )
+        
+        self.layers = nn.ModuleList(
+            [
+                MokioMindDecoderLayer(config)
+                for _ in range(config.num_hidden_layers)
+            ]
+        )
+        
+        self.norm = RMSNorm(
+            config.hidden_size,
+            eps=config.rms_norm_eps
+        )
+    
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        position_ids=None
+    ):
+        bsz, seq_len = input_ids.shape
+        
+        if position_ids is None:
+            position_ids = torch.arange(
+                seq_len,
+                device=input_ids.device
+            ).unsqueeze(0).expand(bsz, -1)
+        
+        if attention_mask is None:
+            attention_mask = make_causal_mask(
+                seq_len=seq_len,
+                device=input_ids.device,
+                dtype=torch.float32
+            )
+        
+        hidden_states = self.embed_tokens(input_ids)
+        
+        for layer in self.layers:
+            hidden_states = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids
+            )
+        
+        hidden_states = self.norm(hidden_states)
         
         return hidden_states
