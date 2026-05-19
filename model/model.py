@@ -488,3 +488,50 @@ class MokioMindModel(nn.Module):
         hidden_states = self.norm(hidden_states)
         
         return hidden_states
+
+# CausalLM
+class MokioMindForCausalLM(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        
+        self.config = config
+        
+        self.model = MokioMindModel(config)
+        
+        self.lm_head = nn.Linear(
+            config.hidden_size,
+            config.vocab_size,
+            bias=False
+        )
+    
+    def forward(
+        self,
+        input_ids,
+        attention_mask=None,
+        position_ids=None,
+        labels=None
+    ):
+        hidden_states = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids
+        )
+        
+        logits = self.lm_head(hidden_states)
+        
+        loss = None
+        
+        if labels is not None:
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(
+                shift_logits.view(-1, self.config.vocab_size),
+                shift_labels.view(-1)
+            )
+            
+            return {
+                "loss": loss,
+                "logits": logits
+            }
