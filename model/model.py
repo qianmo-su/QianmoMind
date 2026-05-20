@@ -530,8 +530,7 @@ class MokioMindForCausalLM(nn.Module):
                 shift_logits.view(-1, self.config.vocab_size),
                 shift_labels.view(-1)
             )
-            
-            return {
-                "loss": loss,
-                "logits": logits
-            }
+        return {
+            "loss": loss,
+            "logits": logits
+        }
