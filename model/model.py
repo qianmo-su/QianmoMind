@@ -309,6 +309,12 @@ class MokioMindAttention(nn.Module):
         v_states = v_states.view(
             bsz, seq_len, self.num_kv_heads, self.head_dim
         ).transpose(1, 2)
+
+        q_states, k_states = self.rotary_emb(
+            q_states,
+            k_states,
+            position_ids=position_ids
+        )
         
         k_states = repeat_kv(k_states, self.num_kv_groups)
         v_states = repeat_kv(v_states, self.num_kv_groups)
