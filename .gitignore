@@ -28,26 +28,38 @@ ENV/
 # Environment and secret files
 .env
 .env.*
-*.ini
-*.cfg
-*.yaml
-*.yml
-!*.example.yaml
-!*.example.yml
+secrets.*
+*.local
 
 # Training outputs and temporary files
 checkpoints/
 outputs/
 runs/
 logs/
+wandb/
+tensorboard/
 *.pt
 *.pth
 *.ckpt
+*.bin
+*.safetensors
 
-# Dataset files (local large files)
-dataset/pretrain_t2t_mini.jsonl
-# Ignore all jsonl dataset files
-*.jsonl
+# Local datasets. Keep dataset code, ignore large training files.
+dataset/*.json
+dataset/*.jsonl
+dataset/*.csv
+dataset/*.parquet
+dataset/*.arrow
+!dataset/lm_dataset.py
+!dataset/sft_dataset.py
+!dataset/.gitkeep
+!dataset/*example*.json
+!dataset/*example*.jsonl
+
+# Temporary files
+tmp/
+temp/
+*.tmp
 
 # OS metadata
 .DS_Store
