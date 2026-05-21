@@ -44,6 +44,9 @@ logs/
 *.pth
 *.ckpt
 
+# Dataset files (local large files)
+dataset/pretrain_t2t_mini.jsonl
+
 # OS metadata
 .DS_Store
 Thumbs.db
