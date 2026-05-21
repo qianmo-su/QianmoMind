@@ -46,6 +46,8 @@ logs/
 
 # Dataset files (local large files)
 dataset/pretrain_t2t_mini.jsonl
+# Ignore all jsonl dataset files
+*.jsonl
 
 # OS metadata
 .DS_Store
