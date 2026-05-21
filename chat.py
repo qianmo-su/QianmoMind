@@ -23,6 +23,7 @@ def build_arg_parser():
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=3)
     parser.add_argument("--device", type=str, default=None)
     return parser
 
@@ -72,6 +73,24 @@ def filter_logits(logits, top_k=0, top_p=1.0):
     return logits
 
 
+def apply_no_repeat_ngram(logits, generated_ids, ngram_size):
+    if ngram_size <= 0 or len(generated_ids) + 1 < ngram_size:
+        return logits
+
+    prefix = tuple(generated_ids[-(ngram_size - 1):])
+    banned_tokens = []
+
+    for i in range(len(generated_ids) - ngram_size + 1):
+        ngram = tuple(generated_ids[i: i + ngram_size])
+        if ngram[:-1] == prefix:
+            banned_tokens.append(ngram[-1])
+
+    if banned_tokens:
+        logits[banned_tokens] = -float("inf")
+
+    return logits
+
+
 @torch.no_grad()
 def generate(
     model,
@@ -83,6 +102,7 @@ def generate(
     top_k,
     top_p,
     repetition_penalty,
+    no_repeat_ngram_size,
 ):
     input_ids = tokenizer(prompt, add_special_tokens=False).input_ids
     bos_id = tokenizer.bos_token_id
@@ -100,6 +120,7 @@ def generate(
         outputs = model(input_ids=x)
         logits = outputs["logits"][0, -1, :].float()
         logits = apply_repetition_penalty(logits, generated, repetition_penalty)
+        logits = apply_no_repeat_ngram(logits, generated, no_repeat_ngram_size)
 
         if temperature <= 0:
             next_id = torch.argmax(logits).item()
@@ -138,6 +159,7 @@ def main():
             args.top_k,
             args.top_p,
             args.repetition_penalty,
+            args.no_repeat_ngram_size,
         ))
         return
 
@@ -157,6 +179,7 @@ def main():
             args.top_k,
             args.top_p,
             args.repetition_penalty,
+            args.no_repeat_ngram_size,
         )
         print(f"assistant> {response}")
 
