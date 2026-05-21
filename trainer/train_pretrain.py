@@ -13,7 +13,13 @@ if ROOT_DIR not in sys.path:
 
 from dataset.lm_dataset import PretrainDataset
 from model.model import MokioMindConfig, MokioMindForCausalLM
-from trainer.trainer_utils import get_amp_dtype, get_device, save_checkpoint, set_seed
+from trainer.trainer_utils import (
+    build_cosine_scheduler,
+    get_amp_dtype,
+    get_device,
+    save_checkpoint,
+    set_seed,
+)
 
 
 @dataclass
@@ -90,6 +96,9 @@ def build_arg_parser():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--max_steps", type=int, default=20)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
+    parser.add_argument("--warmup_steps", type=int, default=0)
+    parser.add_argument("--warmup_ratio", type=float, default=0.03)
+    parser.add_argument("--min_lr_ratio", type=float, default=0.1)
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
@@ -145,9 +154,22 @@ def train():
         betas=(0.9, 0.95),
         weight_decay=args.weight_decay,
     )
+    warmup_steps = args.warmup_steps
+    if warmup_steps == 0 and args.warmup_ratio > 0:
+        warmup_steps = int(args.max_steps * args.warmup_ratio)
+    scheduler = build_cosine_scheduler(
+        optimizer=optimizer,
+        max_steps=args.max_steps,
+        warmup_steps=warmup_steps,
+        min_lr_ratio=args.min_lr_ratio,
+    )
 
     print(f"mode={'smoke' if is_smoke else 'pretrain'} device={device} dtype={amp_dtype}")
     print(f"dataset_size={len(dataset)} vocab_size={len(tokenizer)} max_steps={args.max_steps}")
+    print(
+        f"lr={args.learning_rate} warmup_steps={warmup_steps} "
+        f"min_lr_ratio={args.min_lr_ratio}"
+    )
 
     global_step = 0
     running_loss = 0.0
@@ -167,6 +189,7 @@ def train():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
@@ -175,17 +198,32 @@ def train():
             if global_step % args.log_every == 0:
                 avg_loss = running_loss / args.log_every
                 ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
-                print(f"step={global_step:04d} loss={avg_loss:.4f} ppl={ppl:.2f}")
+                lr = scheduler.get_last_lr()[0]
+                print(f"step={global_step:04d} loss={avg_loss:.4f} ppl={ppl:.2f} lr={lr:.2e}")
                 running_loss = 0.0
 
             if global_step % args.save_every == 0:
-                ckpt_path = save_checkpoint(args.output_dir, model, optimizer, global_step, config)
+                ckpt_path = save_checkpoint(
+                    args.output_dir,
+                    model,
+                    optimizer,
+                    global_step,
+                    config,
+                    scheduler=scheduler,
+                )
                 print(f"saved={ckpt_path}")
 
             if global_step >= args.max_steps:
                 break
 
-    ckpt_path = save_checkpoint(args.output_dir, model, optimizer, global_step, config)
+    ckpt_path = save_checkpoint(
+        args.output_dir,
+        model,
+        optimizer,
+        global_step,
+        config,
+        scheduler=scheduler,
+    )
     print(f"done step={global_step} checkpoint={ckpt_path}")
 
 
