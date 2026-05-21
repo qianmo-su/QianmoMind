@@ -33,7 +33,9 @@ secrets.*
 
 # Training outputs and temporary files
 checkpoints/
+**/checkpoints/
 outputs/
+**/outputs/
 runs/
 logs/
 wandb/
@@ -45,6 +47,9 @@ tensorboard/
 *.safetensors
 
 # Local datasets. Keep dataset code, ignore large training files.
+*.jsonl
+*.parquet
+*.arrow
 dataset/*.json
 dataset/*.jsonl
 dataset/*.csv
