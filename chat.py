@@ -10,12 +10,14 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
+from model.lora import inject_lora, load_lora_state_dict
 from model.model import MokioMindConfig, MokioMindForCausalLM
 
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Chat with a trained MokioMind checkpoint.")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/pretrain/last.pt")
+    parser.add_argument("--lora_adapter", type=str, default=None)
     parser.add_argument("--tokenizer_path", type=str, default="tokenizer")
     parser.add_argument("--prompt", type=str, default=None)
     parser.add_argument("--max_new_tokens", type=int, default=128)
@@ -24,8 +26,13 @@ def build_arg_parser():
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--repetition_penalty", type=float, default=1.05)
     parser.add_argument("--no_repeat_ngram_size", type=int, default=3)
+    parser.add_argument("--raw_prompt", action="store_true")
     parser.add_argument("--device", type=str, default=None)
     return parser
+
+
+def apply_chat_template(prompt):
+    return f"用户：{prompt}\n助手："
 
 
 def load_model(checkpoint_path, tokenizer, device):
@@ -41,6 +48,21 @@ def load_model(checkpoint_path, tokenizer, device):
     model.to(device)
     model.eval()
     return model
+
+
+def load_lora_adapter(model, adapter_path, device):
+    checkpoint = torch.load(adapter_path, map_location="cpu")
+    lora_config = checkpoint["lora_config"]
+    inject_lora(
+        model,
+        target_modules=lora_config["target_modules"],
+        r=lora_config["r"],
+        alpha=lora_config["alpha"],
+        dropout=0.0,
+    )
+    load_lora_state_dict(model, checkpoint["adapter"])
+    model.to(device)
+    model.eval()
 
 
 def apply_repetition_penalty(logits, generated_ids, penalty):
@@ -146,13 +168,18 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
 
     model = load_model(args.checkpoint, tokenizer, device)
+    if args.lora_adapter:
+        load_lora_adapter(model, args.lora_adapter, device)
     print(f"loaded checkpoint={args.checkpoint} device={device}")
+    if args.lora_adapter:
+        print(f"loaded lora_adapter={args.lora_adapter}")
 
     if args.prompt:
+        prompt = args.prompt if args.raw_prompt else apply_chat_template(args.prompt)
         print(generate(
             model,
             tokenizer,
-            args.prompt,
+            prompt,
             device,
             args.max_new_tokens,
             args.temperature,
@@ -169,10 +196,11 @@ def main():
             break
         if not prompt:
             continue
+        model_prompt = prompt if args.raw_prompt else apply_chat_template(prompt)
         response = generate(
             model,
             tokenizer,
-            prompt,
+            model_prompt,
             device,
             args.max_new_tokens,
             args.temperature,

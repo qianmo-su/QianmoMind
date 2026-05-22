@@ -1,7 +1,7 @@
+import json
 import os
 
 import torch
-from datasets import load_dataset
 from torch.utils.data import Dataset
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -12,7 +12,31 @@ class SFTDataset(Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.samples = load_dataset("json", data_files=data_path, split="train")
+        self.samples = self._load_samples(data_path)
+
+    def _load_samples(self, data_path):
+        samples = []
+        with open(data_path, "r", encoding="utf-8") as f:
+            for line_no, line in enumerate(f, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    sample = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"invalid JSON at {data_path}:{line_no}") from exc
+
+                conversations = []
+                for message in sample.get("conversations", []):
+                    conversations.append(
+                        {
+                            "role": message.get("role"),
+                            "content": message.get("content", ""),
+                        }
+                    )
+                samples.append({"conversations": conversations})
+
+        return samples
 
     def __len__(self):
         return len(self.samples)
